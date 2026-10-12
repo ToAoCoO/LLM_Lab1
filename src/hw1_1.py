@@ -409,18 +409,39 @@ for name, d in ngram.items():
     display(show_examples(d["test"]))
 
 # %% [markdown]
-# **1(c) 討論**（請依上方實際輸出修改數字與例子）
+# **1(c) 討論**
 #
-# - **時間與記憶體**：n-gram 的「訓練」只是一次掃過訓練資料做計數，建構時間在秒級；trigram 需要儲存的 entry 數遠多於 bigram
-#   （context 從 $|\mathcal V|$ 種變成最多 $|\mathcal V|^2$ 種），因此建構時間與記憶體都較高。推論時每個字元只是一次 hash 查表，
-#   但因為是純 Python 迴圈且要對 5 個模型各算一次，推論時間與文字總長度成正比。
-# - **容易混淆的語言**：觀察 confusion matrix，Spanish ↔ Portuguese 通常是最主要的錯誤來源（兩者同屬伊比利羅曼語，
-#   字母組合如 `de`、`que`、`ão`/`ón` 以外的字元統計很接近）；其次是同為羅曼語的 French 與 Spanish/Portuguese。
-#   English 與 German 因為字元分布（例如 German 的 `ß`、`ü`、`sch`，English 的 `th`、`wh`）與羅曼語差異大，錯誤較少。
-# - **短文字比較難**：由長度分組表可見，最短的 bucket accuracy 最低。短文字只有少數字元可以累積 log-likelihood 證據，
-#   一個罕見 bigram/trigram 或專有名詞、數字、英文借字就可能決定結果；長文字的 NLL 是很多字元的平均，雜訊會被平均掉。
-# - **Bigram vs Trigram**：trigram 能捕捉更長的字元模式（例如 `the`、`ção`、`ein`），通常 PPL 更低、分類更準；
-#   但在 Add-1 平滑下，trigram 的大量未見 context 會把太多機率分給沒看過的字元，資料不足時可能抵銷部分好處。
+# > 以下數字來自一次完整執行的結果。在 GPU 上重跑後，accuracy / PPL 可能在小數點後略有不同，時間與記憶體一定會不同，請對照你的輸出更新。
+#
+# **建構 / 推論成本**
+# - n-gram 的「訓練」只是把訓練資料掃一遍做計數：bigram 約 0.13 秒、trigram 約 0.18 秒。
+# - 記憶體峰值 bigram 約 0.5 MB、trigram 約 2.9 MB。trigram 存的 entry 數（30,307）約是 bigram（5,855）的 5 倍，
+#   因為 context 從單一字元變成字元對，可能的組合數大幅增加。
+# - 推論只是查表：700 段 test 文字 × 5 個語言模型約 0.12 秒，每段約 0.18 ms，完全不需要 GPU。
+#
+# **哪些語言容易混淆**
+# - **Spanish ↔ Portuguese 是最主要的錯誤**：bigram 19 個錯誤中有 12 個、trigram 9 個錯誤中有 5 個都是這一對。
+# - 兩者同屬伊比利羅曼語，大量功能詞與字根拼法相同（`de`、`sobre`、`países`、`grupos`），所以 Portuguese 的 recall 最低（bigram 0.914）。
+# - English 幾乎全對（F1 0.996）。一個原因是字元分布本來就和羅曼語差異大；另一個原因是本資料集的 English 文字平均長度約 160 字元，
+#   是其他語言（約 40 字元）的 4 倍，證據比較多。
+#
+# **代表性錯誤**
+# - `sobre países competitivos.`（Spanish → Portuguese）：每個字在兩種語言裡拼法都一樣，本質上無法只靠字元判斷。
+# - `Afinal, Jimmy Stewart obstruiu durante`（Portuguese → German/English）：專有名詞 `Jimmy Stewart` 佔了大半字元，把判斷拉向日耳曼語。
+# - `4.800 --`：幾乎只有數字與符號，沒有語言資訊。
+# - `Ándale! Ándale!"` 標成 Portuguese，但 *ándale* 其實是西班牙文。這類**標註雜訊**，模型猜 Spanish 反而合理。
+#
+# **短文字是否比較難**
+# - 是。bigram 在最短的長度區間（≤ 26 字元）accuracy 只有 92.3%，最長的區間（> 69 字元）是 100%。
+# - 錯誤文字平均只有約 26 字元，正確文字約 69 字元。
+# - 因為 English 都很長，Part 4 另外排除 English 再看一次，趨勢依然成立（92.8% → 100%），所以這是長度本身的效果，不是語言的效果。
+#
+# **Bigram vs Trigram**
+# - trigram 整體較好：accuracy 97.29% → 98.71%，test PPL 11.33 → 9.40。
+# - 但看各語言的 val PPL，只有 English（10.74 → 7.25）大幅下降，Spanish（11.99 → 13.63）、Portuguese（12.52 → 13.89）、German（12.61 → 13.61）反而**上升**。
+# - 原因是 Add-1 平滑：每個 context 的分母都加上 |V| = 129。羅曼語與德語的訓練文字很短（每種語言約 4 萬字元），
+#   大部分 trigram context 只出現幾次，加上 129 之後機率被攤得很平，PPL 變高。English 訓練資料多約 4 倍，trigram 才得以發揮。
+# - 即使如此，trigram 的分類仍然比較準，這是「PPL 較低不一定代表 accuracy 較高」（反過來也是）的一個例子，Part 4 會再討論。
 
 # %% [markdown]
 # ---
@@ -672,15 +693,33 @@ print("代表性的錯誤預測：")
 display(show_examples(rnn["test"]))
 
 # %% [markdown]
-# **2 討論**（請依實際輸出修改）
+# **2 討論**
 #
-# - **Learning curves**：training loss 在前幾個 epoch 快速下降後趨緩；val PPL 一開始跟著下降，
-#   若後期開始上升代表 overfitting，因此用 val PPL 最低的 epoch 當 checkpoint。dropout 的選擇結果見上方表格。
-# - **正確預測**：正確的例子通常是長度足夠、含有語言特徵字元或常見字串（如 English 的 `the`、German 的 `sch`/`ü`、
-#   Portuguese 的 `ção`/`ã`、French 的 `é`/`qu'`）的句子，正確語言的 PPL 明顯低於第二名。
-# - **錯誤預測**：錯誤多半出現在很短的文字、充滿專有名詞 / 數字 / 外來語的文字，或語言相近的 Spanish ↔ Portuguese；
-#   這類例子 PPL(true) 與 PPL(pred) 的差距通常很小。
-# - **成本**：RNN 需要 GPU 做反向傳播，訓練時間遠高於 n-gram 的計數；推論需要對每段文字跑 5 次前向傳播。
+# > 以下數字來自一次完整執行的結果。在 GPU 上重跑後，accuracy / PPL 可能在小數點後略有不同，時間與記憶體一定會不同，請對照你的輸出更新。
+#
+# **Learning curves 與模型選擇**
+# - 5 個語言的 training loss 都持續下降，val PPL 也一路下降，最佳 checkpoint 全部落在第 10 個 epoch。
+#   代表模型在 10 個 epoch 內還沒有 overfit，反而是**還沒訓練完全（underfitting）**。
+# - 因此在作業建議的 lr = 0.001 之外，另試了 lr = 0.003：5 個語言合併的 val PPL 從 5.83 降到 4.94，所以選用 lr = 0.003。
+#   在 underfitting 的情況下加 dropout 只會更糟（之前試過 dropout = 0.2，val PPL 反而上升）。
+#
+# **Test 結果**
+# - Accuracy 98.86%、Macro-F1 98.85%、corpus-level PPL 4.76，三項都是 4 種模型中最好的。
+# - 700 段只錯 8 段，其中 5 段是 Spanish ↔ Portuguese。
+#
+# **時間與記憶體**
+# - 每個語言模型約 9.9 萬個參數。
+# - English 的訓練時間是其他語言的 6～7 倍，因為 English 文字很長（最長 1,334 字元），每個 batch 要補齊到最長那段，序列運算步數多。
+# - 推論需要對每段文字跑 5 次前向傳播，比 n-gram 查表慢約 8 倍。實際的 GPU 時間與記憶體請看上方表格。
+#
+# **代表性的正確預測**
+# - 長的 English 文字：PPL(English) ≈ 3.0，第二名 French ≈ 36，差距非常大。
+# - `existen estas señales de aquí.`：Spanish PPL 5.8，Portuguese 10.6。`ñ` 這類只出現在西班牙文的字元提供了關鍵證據。
+#
+# **代表性的錯誤預測**
+# - `de prevenir o desastre climático,`（Portuguese → Spanish）：兩者 PPL 只差 7.89 vs 8.26。除了冠詞 `o` 之外，每個字西葡兩語都通用。
+# - `grupos de gente feliz e infeliz` 標成 Spanish，但連接詞 `e` 是葡萄牙文用法（西文是 `y`），模型預測 Portuguese 其實有道理，可能是標註雜訊。
+# - `4.800 --`、`Ándale! Ándale!"`：與 n-gram 相同的困難例子（沒有語言資訊、標註可疑）。
 
 # %% [markdown]
 # ### Part 3 — LSTM
@@ -717,12 +756,30 @@ print("代表性的錯誤預測：")
 display(show_examples(lstm["test"]))
 
 # %% [markdown]
-# **3 討論**（請依實際輸出修改）
+# **3 討論**
 #
-# - LSTM 透過 gate 與 cell state 緩解 vanilla RNN 的梯度消失，可以記住更長的字元上下文，
-#   因此 val/test PPL 通常低於 RNN，learning curve 也下降得更穩定。
-# - LSTM 每層的參數約為 RNN 的 4 倍（4 組 gate），訓練與推論時間、GPU 記憶體也較高。
-# - 錯誤類型與 RNN 類似：短文字、專有名詞、Spanish ↔ Portuguese。
+# > 以下數字來自一次完整執行的結果。在 GPU 上重跑後，accuracy / PPL 可能在小數點後略有不同，時間與記憶體一定會不同，請對照你的輸出更新。
+#
+# **Learning curves 與模型選擇**
+# - 情況和 RNN 一樣：val PPL 到第 10 個 epoch 都還在下降，最佳 checkpoint 都是第 10 個 epoch。
+# - lr = 0.003 讓合併 val PPL 從 8.44 降到 6.47，因此選用 lr = 0.003。
+#
+# **Test 結果**
+# - Accuracy 98.57%、Macro-F1 98.57%、corpus-level PPL 6.32。
+#
+# **為什麼 LSTM 沒有比 RNN 好？**
+# 理論上 LSTM 記憶力較好，但這次 PPL（6.32 vs 4.76）與 accuracy（98.57% vs 98.86%）都輸給 RNN，原因有兩個：
+# 1. **訓練預算不足**：LSTM 每層有 4 組 gate，參數量約 29.7 萬，是 RNN 的 3 倍，在相同的 10 個 epoch（每個語言約 350 次更新）內收斂得比較慢。
+#    從曲線看 val PPL 仍在快速下降，增加 epoch 數應能超越 RNN。
+# 2. **文字太短**：非 English 文字中位數只有約 40 字元，LSTM 擅長的長距離記憶派不上用場；字元層級的語言特徵大多在前後幾個字元內就能看到。
+#
+# **時間與記憶體**
+# - 參數量是 RNN 的 3 倍，推論時間約為 RNN 的 1.5 倍；GPU 記憶體也較高（見上方表格）。
+#
+# **代表性的正確與錯誤預測**
+# - 正確：`Er führt durch Städte.` German PPL 9.1，第二名 French 高達 108。`ü`、`ä` 與 `Er`/`durch` 等字讓判斷非常明確。
+# - 錯誤：10 個錯誤中有 7 個是 Spanish ↔ Portuguese，例如 `tratando de ser valiente`（Spanish → Portuguese，PPL 6.22 vs 6.48）
+#   和 `A cobertura jornalística`（Portuguese → Spanish）。這些都是短句，而且單字在兩種語言中拼法接近。
 
 # %% [markdown]
 # ---
@@ -836,20 +893,50 @@ for name, res in all_res.items():
         print(f"{name:8s}: 沒有錯誤")
 
 # %% [markdown]
-# **Part 4 綜合討論**（以下為依模型性質寫的分析架構，請以上方實際數字補充 / 修正）
+# **Part 4 綜合討論**
 #
-# 1. **硬體資源**：Bigram / Trigram 只需要 CPU，模型就是計數表；trigram 的表格大小約為 bigram 的數倍。
-#    RNN / LSTM 必須用 GPU 訓練（需要反向傳播與大量矩陣運算），LSTM 的參數量與 GPU 記憶體約為 RNN 的數倍（4 組 gate）。
-# 2. **計算時間**：n-gram「訓練」只是一次計數，時間在秒級；RNN / LSTM 需要 10 個 epoch 的梯度下降（再乘上 dropout 選擇的候選數），
-#    時間高出一到兩個數量級。推論方面 n-gram 是純 Python 查表、神經網路是 GPU 批次運算，兩者都要對每段文字跑 5 個模型。
-# 3. **Accuracy / Macro-F1 / PPL**：一般預期 PPL 由低到高為 LSTM < RNN < Trigram < Bigram，因為模型能利用的上下文越長、
-#    參數越有彈性，對下一個字元的預測越準。
-# 4. **較低的 PPL 不一定代表較高的 accuracy**：corpus PPL 衡量的是「真實語言模型對自己語言文字的預測能力」，
-#    而分類取決於「真實語言的 PPL 是否低於其他 4 個語言模型」的**相對差距**。一個模型可以整體 PPL 更低，
-#    卻在 Spanish ↔ Portuguese 這類相近語言上同時降低兩邊的 PPL，邊界沒有變得更清楚；
-#    此外當各模型的 accuracy 都已接近飽和時，PPL 的大幅差異只會換來很小的 accuracy 差異。請以上方排序表確認實際情況。
-# 5. **最常混淆的語言對**：Spanish ↔ Portuguese（同屬伊比利羅曼語，大量共同字根與字母組合），其次是其他羅曼語之間
-#    （French ↔ Spanish/Portuguese）；English 與 German 雖同屬日耳曼語，但書寫上字元分布差異明顯，較少混淆。
-# 6. **短文字**：所有模型在最短的長度 bucket 表現最差，錯誤文字的平均長度明顯短於正確文字。
-#    短文字可累積的證據少，NLL 平均值的變異大，專有名詞、數字、借字的影響被放大；神經網路模型的優勢主要來自較長上下文，
-#    在極短文字上也無法發揮，因此短文字上各模型的差距會縮小。
+# > 以下數字來自一次完整執行的結果。在 GPU 上重跑後，accuracy / PPL 可能在小數點後略有不同，時間與記憶體一定會不同，請對照你的輸出更新。
+#
+# | | Bigram | Trigram | RNN | LSTM |
+# |---|---|---|---|---|
+# | Test accuracy | 97.29% | 98.71% | **98.86%** | 98.57% |
+# | Test macro-F1 | 97.27% | 98.71% | **98.85%** | 98.57% |
+# | Test corpus PPL | 11.33 | 9.40 | **4.76** | 6.32 |
+# | 錯誤數（/700） | 19 | 9 | **8** | 10 |
+#
+# **1. 硬體資源**
+# - n-gram 只需要 CPU 和幾 MB 的記憶體，模型就是一張計數表（bigram 5,855 項、trigram 30,307 項）。
+# - RNN / LSTM 需要 GPU 做反向傳播。5 個模型合計參數 RNN 約 50 萬、LSTM 約 149 萬，GPU 記憶體也以 LSTM 最高。
+#
+# **2. 計算時間**
+# - n-gram 建構不到 1 秒；RNN / LSTM 每個設定要訓練 10 個 epoch，加上 val 選擇時跑了 2 組 lr，時間多了好幾個數量級。
+# - 推論方面，n-gram 每段約 0.2 ms，RNN 與 LSTM 慢了數倍到十倍左右。
+#
+# **3. 效能**
+# - RNN 在 PPL、accuracy、macro-F1 三項都最好。
+# - 但所有模型的 accuracy 都在 97% 以上，差距只有幾段文字，**投入的運算成本與換來的 accuracy 不成比例**：trigram 只用不到 1 秒，accuracy 就只比 RNN 少 0.15%。
+#
+# **4. PPL 較低是否一定 accuracy 較高？不一定。**
+# - **反例一**：LSTM 的 PPL（6.32）明顯低於 trigram（9.40），accuracy 卻較低（98.57% vs 98.71%）。
+# - **反例二**：trigram 在 Spanish / Portuguese / German 的 val PPL 都比 bigram 高，這三種語言的 F1 卻都比 bigram 好。
+# - **原因**：corpus PPL 衡量的是「真實語言的模型」預測自己語言文字的能力，是**絕對**的品質；
+#   分類看的卻是真實語言的 PPL 是否**相對**低於其他 4 個模型。PPL 整體下降時，如果相近語言（如 Spanish 與 Portuguese）的模型同時變好，
+#   兩者的差距不一定拉大，分類邊界就不會更清楚。
+# - 此外 accuracy 已接近飽和，剩下的錯誤多是本質上模稜兩可或標註有問題的文字，PPL 再低也救不回來。
+# - 整體趨勢上 PPL 較低的模型通常比較準（Bigram 最差、RNN 最好），但兩者不是嚴格單調的關係。
+#
+# **5. 最常混淆的語言對**
+# - **Spanish ↔ Portuguese** 在 4 個模型的 46 個錯誤中佔了 29 個（63%），每個模型都是第一名。原因是兩者親緣最近，共用大量字根與功能詞。
+# - 第二名 Portuguese ↔ German（7 個）並不是語言相似，而是含專有名詞、數字的文字（如 `Jimmy Stewart`、`4.800 --`），字元統計被非語言內容主導。
+# - English ↔ German 雖同屬日耳曼語，但書寫的字元分布差異大，0 次混淆。
+#
+# **6. 文字較短時效能是否下降？是。**
+# - 所有模型都在最短的長度區間（≤ 26 字元）表現最差：bigram 92.3%、LSTM 95.1%、RNN 97.2%。
+#   超過 47 字元後，trigram / RNN / LSTM 都是 100%。
+# - 錯誤文字平均長度約 24～26 字元，正確文字約 68 字元。
+# - 因為 English 文字普遍很長、最長的區間有 101/140 段是 English，所以另外排除 English 再看，趨勢不變。這確實是長度造成的，不是語言造成的。
+# - 神經網路對短文字的改善最多（≤ 26 字元：bigram 92.3% → RNN 97.2%），因為它能把整段字元的上下文一起納入判斷。
+#
+# **7. 資料集觀察**
+# - 本資料集的 English 文字明顯比其他語言長，且內容多為宗教經文翻譯，和其他語言的 TED 演講逐字稿來源不同。
+#   所以 English 在所有模型中都幾乎全對，一部分可能是「文字長度 / 文體」本身就成了線索，而不只是語言特徵。
