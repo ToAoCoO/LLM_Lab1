@@ -434,7 +434,8 @@ for name, d in ngram.items():
 # - Loss：`CrossEntropyLoss(ignore_index=<PAD>)`，所以 `<PAD>` 不算在 loss / PPL 裡；`<BOS>` 從不是目標。
 # - Optimizer：Adam, lr = 0.001；10 epochs；batch size 32；gradient clipping = 1.0（避免 RNN 梯度爆炸）。
 # - 每個 epoch 結束後計算該語言 val 文字的 corpus-level PPL，**保留 val PPL 最低的 epoch 作為最終 checkpoint**。
-# - **模型設定選擇**：在建議設定之外另試 dropout（`HP_GRID`），以 5 個語言合併的 val corpus-level PPL 選出最終設定；
+# - **模型設定選擇**：除了作業建議的設定（lr = 0.001），另試 lr = 0.003（`HP_GRID`），以 5 個語言合併的 val corpus-level PPL 選出最終設定；
+#   會試較大的 learning rate 是因為在 10 個 epoch 內 val PPL 仍持續下降（underfitting），此時調大 lr 比加 dropout 等 regularization 更有幫助；
 #   test set 完全不參與選擇。
 # - 依作業規定 RNN / LSTM 必須在 GPU 上執行。
 
@@ -451,7 +452,7 @@ print("torch", torch.__version__)
 BASE_HP = dict(emb_dim=128, hidden_dim=128, num_layers=2, lr=1e-3, epochs=10, batch_size=32,
                dropout=0.0, clip=1.0)
 # 以 val 選擇的候選設定：第一個為作業建議設定
-HP_GRID = [dict(BASE_HP), dict(BASE_HP, dropout=0.2)]
+HP_GRID = [dict(BASE_HP), dict(BASE_HP, lr=3e-3)]
 EVAL_BATCH = 128
 
 # %%
@@ -573,10 +574,10 @@ def score_matrix_nn(models, ids_list):
 def run_family(cell):
     runs = []
     for hp in HP_GRID:
-        print(f"== {cell.upper()} | dropout={hp['dropout']} ==")
+        print(f"== {cell.upper()} | lr={hp['lr']} ==")
         runs.append(train_family(cell, hp))
     sel = min(runs, key=lambda r: r["val_ppl"])
-    display(pd.DataFrame([{"dropout": r["hp"]["dropout"], "val corpus PPL (5 langs)": r["val_ppl"],
+    display(pd.DataFrame([{"lr": r["hp"]["lr"], "val corpus PPL (5 langs)": r["val_ppl"],
                            "total train time (s)": sum(r["train_time"].values()),
                            "selected": r is sel} for r in runs]))
     for r in runs:  # 釋放沒被選上的模型
@@ -605,7 +606,7 @@ def plot_curves(res, title):
     for ax in axes:
         ax.legend()
         ax.grid(alpha=0.3)
-    fig.suptitle(f"{title} (dropout = {hp['dropout']})")
+    fig.suptitle(f"{title} (lr = {hp['lr']})")
     plt.tight_layout()
     plt.show()
 
@@ -804,6 +805,20 @@ display(pair_tbl.sort_values("total", ascending=False))
 len_tbl = pd.concat({name: length_report(res)["accuracy"] for name, res in all_res.items()}, axis=1)
 len_tbl.insert(0, "n_texts", length_report(all_res["Bigram"])["n_texts"])
 display(len_tbl)
+
+# 注意：各語言的文字長度分布不同（English 明顯較長），所以也要看每個長度 bucket 裡的語言組成，避免把「語言」的效果誤認為「長度」的效果
+bucket = pd.cut(test_df["n_chars"], LEN_BINS, precision=0)
+print("各長度 bucket 的語言組成（test）")
+display(pd.crosstab(bucket, test_df["Language"]).reindex(columns=LANGS))
+
+# 排除 English 後再看一次長度效應（只比較長度分布相近的 4 個語言）
+non_en = (test_df["Language"] != "English").to_numpy()
+len_tbl_no_en = pd.concat({
+    name: pd.DataFrame({"b": bucket[non_en], "c": (res["y_true"] == res["y_pred"])[non_en]})
+            .groupby("b", observed=True)["c"].mean()
+    for name, res in all_res.items()}, axis=1)
+print("排除 English 後，各長度 bucket 的 accuracy")
+display(len_tbl_no_en)
 
 ax = len_tbl.drop(columns="n_texts").plot(marker="o", figsize=(8, 4))
 ax.set(title="Test accuracy vs. text length (character-count quintiles)", xlabel="text length (#chars)", ylabel="accuracy")
